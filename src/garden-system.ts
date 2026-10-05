@@ -180,7 +180,10 @@ export class GardenSystem extends createSystem({
     card.mesh.position.set(x, y, action.startsWith('intent:') ? 0.03 : 0);
     const entity = this.world.createTransformEntity(card.mesh, { parent: this.uiEntity });
     entity.addComponent(GardenButton, { action });
-    const button: Button = { entity, card, shown: false };
+    // Start as shown so the first hide actually takes effect.
+    const button: Button = { entity, card, shown: true };
+    entity.addComponent(RayInteractable);
+    entity.addComponent(PokeInteractable);
     this.buttons.set(action, button);
     this.setButtonShown(button, false);
 
@@ -482,6 +485,8 @@ export class GardenSystem extends createSystem({
   // ---------------------------------------------------------------- frame
 
   update(delta: number, time: number): void {
+    // Pause the ritual while system UI covers the session; resume where we left off.
+    if (this.world.visibilityState.peek() === VisibilityState.VisibleBlurred) return;
     const dt = Math.min(delta, 0.1);
     this.phaseTime += dt;
     this.readHead();

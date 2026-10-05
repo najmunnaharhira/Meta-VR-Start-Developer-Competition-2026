@@ -68,9 +68,8 @@ export class HandTracker {
     }
   }
 
-  get any(): HandSignal[] {
-    return [this.left, this.right];
-  }
+  /** Both hands, allocated once so per-frame loops don't create garbage. */
+  readonly any: readonly HandSignal[] = [this.left, this.right];
 
   private jointPos(
     frame: XRFrame,
