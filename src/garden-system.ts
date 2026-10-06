@@ -12,6 +12,8 @@ import {
   AdditiveBlending,
   BoxGeometry,
   Color,
+  ConeGeometry,
+  DepthOccludable,
   createSystem,
   Entity,
   Group,
@@ -36,6 +38,7 @@ import {
   completeRitual,
   doneToday,
   droopAmount,
+  DeskSpot,
   GardenSave,
   Intention,
   INTENTION_COLORS,
@@ -44,6 +47,7 @@ import {
   loadSave,
   writeSave,
 } from './garden-state.js';
+import { GhostHand } from './ghost-hand.js';
 import { HandTracker } from './hands.js';
 import { HIGH_CONTRAST_STYLE, NORMAL_STYLE, TextCard } from './label.js';
 import { PlantModel, POT_HEIGHT, SOIL_Y } from './plant-model.js';
@@ -91,6 +95,10 @@ export class GardenSystem extends createSystem({
   private userMoved = false;
   private placedOnPlane = false;
   private surfaceName = '';
+  private restoredSpot = false;
+  private lastPourTime = 0;
+  private ghost = new GhostHand();
+  private wayfinder!: Mesh;
 
   private waterTarget!: Mesh;
   private breathRing!: Mesh;
@@ -104,6 +112,7 @@ export class GardenSystem extends createSystem({
   private v1 = new Vector3();
   private v2 = new Vector3();
   private q1 = new Quaternion();
+  private q2 = new Quaternion();
   private originMatrix = new Matrix4();
 
   init(): void {
@@ -116,10 +125,14 @@ export class GardenSystem extends createSystem({
     this.plant = new PlantModel();
     this.plant.setStage(this.save.stage, this.save.history, true);
     this.plant.setDroop(droopAmount(this.save), true);
-    this.garden.add(this.plant.root);
+    // Real hands and objects in front of the plant hide it (depth occlusion on Quest 3).
+    const plantEntity = this.world.createTransformEntity(this.plant.root, { parent: this.gardenEntity });
+    plantEntity.addComponent(DepthOccludable);
 
     this.ui = new Group();
     this.uiEntity = this.world.createTransformEntity(this.ui, { parent: this.gardenEntity });
+    // The ghost hand lives in the user-facing UI frame (+Z points at the user).
+    this.ui.add(this.ghost.root);
 
     this.prompt = new TextCard(0.2, 0.1);
     this.prompt.mesh.position.set(0.17, 0.2, 0);
@@ -239,6 +252,17 @@ export class GardenSystem extends createSystem({
     this.sparkle.visible = false;
     this.garden.add(this.sparkle);
 
+    // FoV helper: a small arrow at the edge of view pointing back to the plant.
+    const arrowGeo = new ConeGeometry(0.008, 0.02, 12);
+    arrowGeo.rotateZ(-Math.PI / 2); // point along +X
+    this.wayfinder = new Mesh(
+      arrowGeo,
+      new MeshBasicMaterial({ color: 0x9be37a, transparent: true, opacity: 0.9, depthTest: false }),
+    );
+    this.wayfinder.renderOrder = 20;
+    this.wayfinder.visible = false;
+    this.world.createTransformEntity(this.wayfinder);
+
     const dropGeo = new SphereGeometry(0.0035, 8, 6);
     const dropMat = new MeshBasicMaterial({ color: 0x8fd8ff, transparent: true, opacity: 0.85 });
     for (let i = 0; i < DROP_COUNT; i++) {
@@ -275,6 +299,7 @@ export class GardenSystem extends createSystem({
     this.phaseTime = 0;
     this.waterTarget.visible = phase === 'water';
     this.breathRing.visible = phase === 'breathe';
+    this.ghost.show(false);
     switch (phase) {
       case 'placing':
         this.prompt.set('Looking for your desk…', 'Sit comfortably and look at your table.');
@@ -284,11 +309,19 @@ export class GardenSystem extends createSystem({
         this.plant.setDroop(droopAmount(this.save));
         this.showButtons(['contrast']);
         if (this.save.history.length === 0) {
-          this.prompt.set('Hi, I’m your desk plant', 'One small ritual a day helps me grow.');
+          this.prompt.set(
+            'Hi, I’m your desk plant',
+            this.placedOnPlane
+              ? `I found your ${this.surfaceName}. One small ritual a day helps me grow.`
+              : 'One small ritual a day helps me grow.',
+          );
         } else if (this.plant && droopAmount(this.save) > 0) {
           this.prompt.set('I missed you!', 'I’m a little thirsty. Shall we?');
         } else {
-          this.prompt.set(`Day ${this.save.history.length + 1}`, 'Welcome back. Let’s grow.');
+          this.prompt.set(
+            `Day ${this.save.history.length + 1}`,
+            this.restoredSpot ? 'Right where you left me. Let’s grow.' : 'Welcome back. Let’s grow.',
+          );
         }
         break;
       case 'intention':
@@ -297,6 +330,7 @@ export class GardenSystem extends createSystem({
         break;
       case 'water':
         this.waterProgress = 0;
+        this.lastPourTime = 0;
         this.helpPouring = false;
         this.prompt.set('Water it', 'Hold your palm face-down over the ring.', 0);
         this.showButtons(['help', 'contrast']);
@@ -336,6 +370,7 @@ export class GardenSystem extends createSystem({
 
   private startPlacing(): void {
     this.placedOnPlane = false;
+    this.restoredSpot = false;
     this.userMoved = false;
     this.placeInFrontOfHead();
     this.setPhase('placing');
@@ -393,8 +428,8 @@ export class GardenSystem extends createSystem({
     if (this.v1.lengthSq() < 1e-4) this.v1.set(0, 0, -1);
     this.v1.normalize();
     // In the headset: a seated desk spot. On a flat screen: further out so it fits the view.
-    const reach = this.immersive ? 0.42 : 0.55;
-    const drop = this.immersive ? 0.38 : 0.2;
+    const reach = this.immersive ? 0.45 : 0.55;
+    const drop = this.immersive ? 0.32 : 0.2;
     this.garden.position.set(
       this.head.x + this.v1.x * reach,
       this.head.y - drop,
@@ -404,7 +439,74 @@ export class GardenSystem extends createSystem({
   }
 
   /** Pick the horizontal plane that best matches a seated desk in front of the user. */
+  /** Plane-local bounds of a detected plane's polygon. */
+  private planeBounds(plane: XRPlane): { minX: number; maxX: number; minZ: number; maxZ: number } {
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const p of plane.polygon) {
+      minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+      minZ = Math.min(minZ, p.z); maxZ = Math.max(maxZ, p.z);
+    }
+    return { minX, maxX, minZ, maxZ };
+  }
+
+  /**
+   * Put the garden back on the same spot of the same desk as last time.
+   * Room-setup planes are stable across sessions, so a plane-local offset
+   * survives restarts even though world coordinates do not.
+   */
+  private tryRestoreSpot(): boolean {
+    const spot = this.save.deskSpot;
+    if (!spot) return false;
+    for (const entity of this.queries.planes.entities) {
+      const plane = entity.getValue(XRPlane, '_plane') as XRPlane | undefined;
+      const obj = entity.object3D;
+      if (!plane || !obj || plane.orientation !== 'horizontal') continue;
+      if ((plane.semanticLabel ?? '').toLowerCase() !== spot.label) continue;
+      const b = this.planeBounds(plane);
+      const w = b.maxX - b.minX;
+      const d = b.maxZ - b.minZ;
+      if (Math.abs(w - spot.width) > 0.12 || Math.abs(d - spot.depth) > 0.12) continue;
+      if (spot.x < b.minX || spot.x > b.maxX || spot.z < b.minZ || spot.z > b.maxZ) continue;
+      obj.updateWorldMatrix(true, false);
+      this.v2.set(spot.x, 0, spot.z);
+      obj.localToWorld(this.v2);
+      this.garden.position.copy(this.v2);
+      const label = spot.label;
+      this.surfaceName = label === 'table' || label === 'desk' ? 'desk' : 'table';
+      this.placedOnPlane = true;
+      this.restoredSpot = true;
+      return true;
+    }
+    return false;
+  }
+
+  /** Remember where the garden sits, relative to the horizontal plane under it. */
+  private rememberSpot(): void {
+    for (const entity of this.queries.planes.entities) {
+      const plane = entity.getValue(XRPlane, '_plane') as XRPlane | undefined;
+      const obj = entity.object3D;
+      if (!plane || !obj || plane.orientation !== 'horizontal') continue;
+      obj.updateWorldMatrix(true, false);
+      this.v2.copy(this.garden.position);
+      obj.worldToLocal(this.v2);
+      const b = this.planeBounds(plane);
+      if (Math.abs(this.v2.y) > 0.08) continue;
+      if (this.v2.x < b.minX || this.v2.x > b.maxX || this.v2.z < b.minZ || this.v2.z > b.maxZ) continue;
+      const deskSpot: DeskSpot = {
+        label: (plane.semanticLabel ?? '').toLowerCase(),
+        width: b.maxX - b.minX,
+        depth: b.maxZ - b.minZ,
+        x: this.v2.x,
+        z: this.v2.z,
+      };
+      this.save = { ...this.save, deskSpot };
+      writeSave(this.save);
+      return;
+    }
+  }
+
   private tryPlaceOnPlane(): boolean {
+    if (this.tryRestoreSpot()) return true;
     this.readHead();
     this.camera.getWorldDirection(this.v1);
     this.v1.y = 0;
@@ -436,11 +538,7 @@ export class GardenSystem extends createSystem({
     const obj = best.object3D;
     obj.updateWorldMatrix(true, false);
     // Clamp the ideal spot to the plane's polygon bounds (plane-local XZ), inset by the pot radius.
-    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-    for (const p of plane.polygon) {
-      minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
-      minZ = Math.min(minZ, p.z); maxZ = Math.max(maxZ, p.z);
-    }
+    const { minX, maxX, minZ, maxZ } = this.planeBounds(plane);
     this.v2.set(idealX, 0, idealZ);
     obj.worldToLocal(this.v2);
     const inset = 0.07;
@@ -452,6 +550,7 @@ export class GardenSystem extends createSystem({
     this.placedOnPlane = true;
     const label = (plane.semanticLabel ?? '').toLowerCase();
     this.surfaceName = label === 'table' || label === 'desk' ? 'desk' : 'table';
+    this.rememberSpot();
     return true;
   }
 
@@ -525,10 +624,10 @@ export class GardenSystem extends createSystem({
 
     switch (this.phase) {
       case 'placing':
+        // The XR head pose only becomes valid a few frames into the session, so keep
+        // the fallback spot following the head until a desk plane (or timeout) wins.
+        if (this.immersive && !this.placedOnPlane) this.placeInFrontOfHead();
         if (!this.immersive || this.tryPlaceOnPlane() || this.phaseTime > PLACE_SEARCH_SECONDS) {
-          if (this.immersive && this.placedOnPlane) {
-            this.prompt.set(`Found your ${this.surfaceName}`, '');
-          }
           this.afterPlaced();
         }
         break;
@@ -562,7 +661,45 @@ export class GardenSystem extends createSystem({
     }
 
     if (this.phaseTime < dt * 2 || Math.floor(time) !== Math.floor(time - dt)) this.updateLean();
+    this.ghost.update(dt);
+    this.updateWayfinder();
     this.plant.update(dt, time);
+  }
+
+  /** FoV-aware: when the plant drifts out of a comfortable view cone, point back to it. */
+  private updateWayfinder(): void {
+    if (!this.immersive) {
+      this.wayfinder.visible = false;
+      return;
+    }
+    // Aim at the prompt card height: that is what must stay in view.
+    this.v1.copy(this.garden.position);
+    this.v1.y += 0.15;
+    this.camera.updateWorldMatrix(true, false);
+    this.camera.worldToLocal(this.v1);
+    // Camera looks down -Z. Comfortable cone ~30 degrees off-centre.
+    const off = Math.atan2(Math.hypot(this.v1.x, this.v1.y), -this.v1.z);
+    if (this.v1.z < 0 && off < 0.52) {
+      this.wayfinder.visible = false;
+      return;
+    }
+    let nx = this.v1.x;
+    let ny = this.v1.y;
+    const len = Math.hypot(nx, ny);
+    if (len < 1e-4) {
+      nx = 0;
+      ny = -1;
+    } else {
+      nx /= len;
+      ny /= len;
+    }
+    this.v2.set(nx * 0.12, ny * 0.12, -0.5);
+    this.camera.localToWorld(this.v2);
+    this.wayfinder.position.copy(this.v2);
+    this.camera.getWorldQuaternion(this.q1);
+    this.q2.setFromAxisAngle(this.v1.set(0, 0, 1), Math.atan2(ny, nx));
+    this.wayfinder.quaternion.copy(this.q1).multiply(this.q2);
+    this.wayfinder.visible = true;
   }
 
   private updateHover(): void {
@@ -582,6 +719,7 @@ export class GardenSystem extends createSystem({
       if (this.grabbingHand === side) {
         if (!hand.tracked || !hand.pinching) {
           this.grabbingHand = null;
+          this.rememberSpot();
           continue;
         }
         this.garden.position.x = hand.indexTip.x + this.grabOffset.x;
@@ -627,6 +765,16 @@ export class GardenSystem extends createSystem({
       this.v2.set(0, top + 0.1, 0);
       this.spawnDrops(dt, this.v2);
     }
+    // After a moment without pouring, a ghost hand demonstrates the gesture.
+    if (pouring) this.lastPourTime = this.phaseTime;
+    const showGhost = !pouring && this.phaseTime - this.lastPourTime > 2.5;
+    this.ghost.show(showGhost);
+    if (showGhost) {
+      const t = this.phaseTime;
+      this.ghost.root.position.set(0, top + 0.12 - this.ui.position.y + Math.sin(t * 2) * 0.01, 0.01);
+      this.ghost.root.rotation.set(0, 0, Math.sin(t * 2) * 0.15, 'ZYX');
+      this.ghost.setOpenness(1);
+    }
     if (pouring) {
       this.waterProgress += dt / WATER_SECONDS;
       this.plant.wetness = Math.min(1, this.plant.wetness + dt);
@@ -665,6 +813,12 @@ export class GardenSystem extends createSystem({
       if (hand.tracked) handOpen = Math.max(handOpen, hand.openness);
     }
     this.plant.breath = handOpen >= 0 ? handOpen : guide;
+    // Ghost hand breathes alongside during the first cycle, or whenever no hand is visible.
+    this.ghost.show(cycle === 0 || handOpen < 0);
+    this.ghost.root.position.set(-0.1, this.plant.topHeight * 0.6 + 0.04 - this.ui.position.y, 0.03);
+    // Palm toward the user, fingers up (ZYX order: tip up after facing the user).
+    this.ghost.root.rotation.set(-Math.PI / 2, 0, Math.PI, 'ZYX');
+    this.ghost.setOpenness(guide);
     const ringScale = 0.7 + guide * 0.7;
     this.breathRing.scale.setScalar(ringScale);
     const inSync = handOpen >= 0 && Math.abs(handOpen - guide) < 0.3;
