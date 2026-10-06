@@ -33,6 +33,17 @@ export interface GardenDay {
   intention: Intention;
 }
 
+/** Where the pot sits, in the local frame of the desk plane it was placed on. */
+export interface DeskSpot {
+  label: string;
+  width: number;
+  depth: number;
+  x: number;
+  z: number;
+  /** Plane height above the floor; floor-relative so it is stable across sessions. */
+  height?: number;
+}
+
 export interface GardenSave {
   version: 1;
   stage: number;
@@ -43,6 +54,7 @@ export interface GardenSave {
   highContrast: boolean;
   /** Days added by the "skip to tomorrow" demo button, so judges can see growth. */
   dayOffset: number;
+  deskSpot?: DeskSpot;
 }
 
 const STORAGE_KEY = 'desk-garden.save.v1';
