@@ -40,6 +40,8 @@ export interface DeskSpot {
   depth: number;
   x: number;
   z: number;
+  /** Plane height above the floor; floor-relative so it is stable across sessions. */
+  height?: number;
 }
 
 export interface GardenSave {

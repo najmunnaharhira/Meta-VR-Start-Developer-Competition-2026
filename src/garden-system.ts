@@ -455,29 +455,44 @@ export class GardenSystem extends createSystem({
    * survives restarts even though world coordinates do not.
    */
   private tryRestoreSpot(): boolean {
+    this.readHead();
     const spot = this.save.deskSpot;
     if (!spot) return false;
+    // Score every candidate instead of taking the first match, so two similar
+    // tables don't swap: size and height must agree, then prefer the one nearest
+    // the user (people sit back down at the same desk).
+    let best: Entity | null = null;
+    let bestScore = Infinity;
     for (const entity of this.queries.planes.entities) {
       const plane = entity.getValue(XRPlane, '_plane') as XRPlane | undefined;
       const obj = entity.object3D;
       if (!plane || !obj || plane.orientation !== 'horizontal') continue;
       if ((plane.semanticLabel ?? '').toLowerCase() !== spot.label) continue;
       const b = this.planeBounds(plane);
-      const w = b.maxX - b.minX;
-      const d = b.maxZ - b.minZ;
-      if (Math.abs(w - spot.width) > 0.12 || Math.abs(d - spot.depth) > 0.12) continue;
+      const dw = Math.abs(b.maxX - b.minX - spot.width);
+      const dd = Math.abs(b.maxZ - b.minZ - spot.depth);
+      if (dw > 0.12 || dd > 0.12) continue;
       if (spot.x < b.minX || spot.x > b.maxX || spot.z < b.minZ || spot.z > b.maxZ) continue;
       obj.updateWorldMatrix(true, false);
-      this.v2.set(spot.x, 0, spot.z);
-      obj.localToWorld(this.v2);
-      this.garden.position.copy(this.v2);
-      const label = spot.label;
-      this.surfaceName = label === 'table' || label === 'desk' ? 'desk' : 'table';
-      this.placedOnPlane = true;
-      this.restoredSpot = true;
-      return true;
+      obj.getWorldPosition(this.v2);
+      const dy = spot.height === undefined ? 0 : Math.abs(this.v2.y - spot.height);
+      if (dy > 0.08) continue;
+      const nearUser = Math.hypot(this.v2.x - this.head.x, this.v2.z - this.head.z);
+      const score = dw + dd + dy * 2 + nearUser * 0.5;
+      if (score < bestScore) {
+        bestScore = score;
+        best = entity;
+      }
     }
-    return false;
+    if (!best || !best.object3D) return false;
+    this.v2.set(spot.x, 0, spot.z);
+    best.object3D.localToWorld(this.v2);
+    this.garden.position.copy(this.v2);
+    const label = spot.label;
+    this.surfaceName = label === 'table' || label === 'desk' ? 'desk' : 'table';
+    this.placedOnPlane = true;
+    this.restoredSpot = true;
+    return true;
   }
 
   /** Remember where the garden sits, relative to the horizontal plane under it. */
@@ -498,6 +513,7 @@ export class GardenSystem extends createSystem({
         depth: b.maxZ - b.minZ,
         x: this.v2.x,
         z: this.v2.z,
+        height: obj.getWorldPosition(this.v1).y,
       };
       this.save = { ...this.save, deskSpot };
       writeSave(this.save);
