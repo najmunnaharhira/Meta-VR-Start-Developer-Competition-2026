@@ -123,6 +123,8 @@ export class PlantModel {
       group.add(new Mesh(centerGeo, centerMat));
       group.scale.setScalar(0.0001);
       group.visible = false;
+      // Parent now so whole-tree passes (e.g. depth occlusion) see every material.
+      this.root.add(group);
       this.flowers.push({ group, petalMaterial, scale: 0, target: 0 });
     }
   }

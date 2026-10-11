@@ -27,10 +27,10 @@ If you skip days it droops a little, but it never dies. Watering perks it back u
 - **Hands-first:** every step uses hand tracking (poke, palm pose, open/close, pinch-to-move the pot). You never need a controller.
 - **Seated, two-foot bubble:** everything sits about 42 cm in front of you on the desk.
 - **One-bus-stop session:** a full ritual takes about 2 minutes. Pausing and resuming is safe because progress saves after each bloom.
-- **Purposeful passthrough:** the plant sits on your detected **table** plane (preferring planes labelled `table`/`desk`). It also **leans toward your real window** if your room scan has one. Remove your room and the experience changes.
-- **FoV-aware:** the cards sit beside the plant within about ±20° and turn to face you.
+- **Purposeful passthrough:** the plant sits on your detected **table** plane (preferring planes labelled `table`/`desk`). It **comes back to the same spot on the same desk** the next day, because the spot is saved relative to the room-setup plane. It also **leans toward your real window** if your room scan has one. On Quest 3, **your real hands hide the plant** when they pass in front of it (depth occlusion). Remove your room and the experience changes.
+- **FoV-aware:** the cards sit beside the plant within about ±20° and turn to face you. If you look away, a small arrow at the edge of your view points back.
 - **Reason to come back:** daily growth, a streak, coloured flower history, and a gentle droop when you skip days.
-- **First five minutes:** no wall of text. Each step has one short line, a visual target and a sound.
+- **First five minutes:** no wall of text. Each step has one short line, a visual target and a sound. If you hesitate, a **ghost hand** demonstrates the gesture (pouring, then breathing).
 - **Accessibility:** every gesture also has a **Help me** button (ray, gaze-pinch, poke or mouse). The breathing step completes for anyone who simply watches. There is a **high-contrast** mode, and all audio is synthesized with on-card captions.
 - **Original:** the plant, effects and sounds are all generated in code, with no third-party services or assets.
 
@@ -73,7 +73,8 @@ src/hands.ts           WebXR hand joints -> palm pose, openness, pinch
 src/garden-state.ts    daily progress, streaks, localStorage save
 src/label.ts           canvas-drawn text cards (normal + high contrast)
 src/sfx.ts             synthesized Web Audio sounds
-iwsdk.config.json      AR session: hand tracking, planes, meshes, anchors, hit-test
+src/ghost-hand.ts      translucent hand that demonstrates each gesture
+iwsdk.config.json      AR session: hands, planes, meshes, anchors, hit-test, depth, gaze
 ```
 
 ## Submission checklist (deadline Nov 18, 2026, 12:00 PM PT)

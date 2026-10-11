@@ -17,7 +17,15 @@
         "anchors": true,
         "planeDetection": true,
         "meshDetection": true,
-        "hitTest": true
+        "hitTest": true,
+        "depthSensing": {
+          "required": false,
+          "usage": "gpu-optimized",
+          "format": "float32"
+        },
+        "gazeTracking": {
+          "required": false
+        }
       }
     },
     "input": {
